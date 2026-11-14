@@ -1,0 +1,72 @@
+services:
+  source-db:
+    image: postgres:17.12
+    environment:
+      POSTGRES_DB: kumparan
+      POSTGRES_USER: ${SOURCE_DB_USER}
+      POSTGRES_PASSWORD: ${SOURCE_DB_PASSWORD}
+    volumes:
+      - source-data:/var/lib/postgresql/data
+      - ./source/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./source:/sql:ro
+    ports:
+      - "127.0.0.1:${SOURCE_DB_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${SOURCE_DB_USER} -d kumparan"]
+      interval: 5s
+      retries: 20
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8.36.3
+    environment:
+      CLICKHOUSE_USER: ${CH_USER}
+      CLICKHOUSE_PASSWORD: ${CH_PASSWORD}
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./warehouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "127.0.0.1:8123:8123"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user ${CH_USER} --password ${CH_PASSWORD} -q 'SELECT 1'"]
+      interval: 5s
+      retries: 20
+
+  airflow-db:
+    image: postgres:17.12
+    environment:
+      POSTGRES_DB: airflow
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+    volumes:
+      - airflow-db-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${AIRFLOW_DB_PORT:-5434}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 5s
+      retries: 20
+
+  airflow:
+    build: ./airflow
+    command: standalone
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@airflow-db:5432/airflow
+      AIRFLOW_CONN_SOURCE_PG: postgresql://${SOURCE_DB_USER}:${SOURCE_DB_PASSWORD}@source-db:5432/kumparan
+      AIRFLOW_CONN_WAREHOUSE_CH: clickhouse://${CH_USER}:${CH_PASSWORD}@clickhouse:8123/raw
+    volumes:
+      - ./dags:/opt/airflow/dags
+    ports:
+      - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
+    depends_on:
+      source-db: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+      airflow-db: { condition: service_healthy }
+
+volumes:
+  source-data:
+  clickhouse-data:
+  airflow-db-data:
